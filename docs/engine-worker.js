@@ -7,7 +7,7 @@ async function startEngine() {
   phase = "Python initialization";
   const python = await loadPyodide({ indexURL });
   const modules = [
-    "thermodynamic_feasibility_tester_MASTER.py", "auto_analyzer.py", "run_mock_assignments.py", "scenario_input.py",
+    "thermodynamic_feasibility_tester_MASTER.py", "auto_analyzer.py", "input_derivation.py", "run_mock_assignments.py", "scenario_input.py",
     "website/__init__.py", "website/local_scenarios.py", "website/dist/__init__.py", "website/dist/solver.py",
   ];
   const sourceRoot = "/home/pyodide/";

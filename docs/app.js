@@ -41,7 +41,9 @@ const models = {
     number: 1, group: "core",
     name: "Heat engine — fixed hot and cold temperatures",
     fields: [["T_hot_K", "Hot temperature (K)", 600, .001], ["T_cold_K", "Cold temperature (K)", 300, .001],
-      ["Q_hot_kw", "Heat supplied (kW)", 100, .001], ["W_out_kw", "Claimed power (kW)", 30, 0]],
+      ["Q_hot_kw", "Heat supplied (kW)", 100, .001], ["W_out_kw", "Claimed power (kW; leave blank to derive)", 30, 0],
+      ["Q_cold_rejected_kw", "Rejected heat (kW; optional if heat and work are known)", "", 0],
+      ["efficiency_fraction", "Efficiency (fraction, optional)", "", 0, 1]],
     note: "The Carnot ceiling uses absolute temperatures. Rejected heat is inferred from the First Law.",
   },
   assignment_base: {
@@ -83,7 +85,7 @@ const models = {
     fields: [["cv_m", "Mass flow rate (kg/s)", 1, .000001],
       ["cv_h_in", "Inlet enthalpy h (kJ/kg)", 3231.7], ["cv_s_in", "Inlet entropy s (kJ/kg K)", 6.9235],
       ["cv_h_out", "Outlet enthalpy h (kJ/kg)", 2675.0], ["cv_s_out", "Outlet entropy s (kJ/kg K)", 7.3589],
-      ["cv_q", "Heat into the device (kW, optional; negative = heat loss)", ""],
+      ["cv_q", "Heat into the device (kW; enter 0 for adiabatic)", ""],
       ["cv_tb", "Boundary temperature of that heat (K, optional)", "", .001],
       ["cv_T0", "Environment/dead-state temperature T0 (K)", 298.15, .001],
       ["cv_h0", "Dead-state enthalpy h0 for this fluid (kJ/kg)", 104.9],
@@ -94,7 +96,7 @@ const models = {
         specific_enthalpy_dead_state_kj_kg: c.cv_h0, specific_entropy_dead_state_kj_kg_k: c.cv_s0}],
       outlets: [{mass_flow_kg_s: c.cv_m, specific_enthalpy_kj_kg: c.cv_h_out, specific_entropy_kj_kg_k: c.cv_s_out,
         specific_enthalpy_dead_state_kj_kg: c.cv_h0, specific_entropy_dead_state_kj_kg_k: c.cv_s0}],
-      heat: c.cv_q === undefined ? [] : [{heat_into_cv_kw: c.cv_q, boundary_temperature_K: c.cv_tb}],
+      heat: c.cv_q === undefined ? undefined : [{heat_into_cv_kw: c.cv_q, boundary_temperature_K: c.cv_tb}],
       W_out_kw: c.W_out_kw}),
     note: "Provide h and s from property tables plus the dead-state h0,s0 and environment T0. If heat crosses the boundary, also provide its boundary temperature. Calculates flow exergy ψ=(h−h0)−T0(s−s0), the reversible shaft-work ceiling and exergy destruction, in addition to mass, energy and entropy balances. Chemical/mixing exergy is not included. This compact form assumes one inlet and one outlet of the same fluid.",
   },
@@ -139,8 +141,8 @@ const models = {
       ["cold_stream.T_out_K", "Cold-stream outlet (°C)", 60, -273.149, undefined, 1, 273.15],
       ["cold_stream.cp_kj_kg_k", "Cold-stream heat capacity (kJ/kg K)", 4.18, .000001],
       ["T0_K", "Environment temperature T0 (°C)", 25, -273.149, undefined, 1, 273.15]],
-    build: (c) => ({...c, energy_relative_tolerance: 0.001}),
-    note: "Checks Q released = Q absorbed (0.1 % allowance for rounded data), S_gen ≥ 0 and no temperature cross. Reports exergy destroyed = T0·S_gen.",
+    build: (c) => ({...c, flow_arrangement: "counterflow"}),
+    note: "Counterflow exchanger: checks strict energy closure, S_gen ≥ 0 and both terminal temperature differences. Reports exergy destroyed = T0·S_gen.",
   },
 };
 const examples = [
@@ -194,7 +196,7 @@ function makeFields(blank = false) {
     input.value = blank ? "" : value;
     input.placeholder = String(value);
     const optional = value === "";
-    input.required = !optional;
+    input.required = key === "suffix";
     if (typeof value === "number" || optional) {
       input.type = "number";
       input.step = key === "suffix" ? "1" : "any";
@@ -244,7 +246,7 @@ function fillValues(route, values) {
 async function runEngine(request) {
   if (fromFile) throw new Error("Start the site with python website/serve.py, then open http://127.0.0.1:8000.");
   if (hosted) {
-    browserWorker ??= new Worker("engine-worker.js?v=20261118-exergy-balances");
+    browserWorker ??= new Worker("engine-worker.js?v=evidence-20261118");
     const worker = browserWorker;
     const id = ++browserRequest;
     return new Promise((resolve, reject) => {
@@ -277,7 +279,7 @@ async function runEngine(request) {
 function outputValues(result, cases) {
   const calc = result.calculations || result;
   const input = Object.values(cases).at(-1);
-  const claimed = calc["Claimed electrical output (kW)"] ?? calc.claimed_electrical_output_kw ?? input?.W_out_kw;
+  const claimed = calc["Claimed electrical output (kW)"] ?? calc.claimed_electrical_output_kw ?? result.inputs?.W_out_kw ?? input?.W_out_kw;
   const limit = calc["Strict reversible power ceiling (kW)"] ?? calc["Reversible power ceiling (kW)"]
     ?? calc.reversible_power_limit_kw ?? calc.reversible_work_limit_kw ?? calc.strict_reversible_work_limit_kw;
   return { calc, claimed, limit };
@@ -363,7 +365,7 @@ function render(data) {
     if (data.analysis) output.append(interpretation(data.analysis));
     return;
   }
-  if (data.status === "needs_values" && data.analysis) {
+  if (data.status === "needs_values" && data.analysis && !data.result) {
     setStatus("Needs info", "wait");
     const message = element("div", undefined, "verdict");
     message.append(element("h3", "Almost there. Add the missing information"),
@@ -386,7 +388,7 @@ function render(data) {
     $("scenario").focus({preventScroll: true});
     return;
   }
-  if (data.status === "needs_values") {
+  if (data.status === "needs_values" && !data.result) {
     const route = data.route;
     setMode(false);
     if (models[route]) $("model").value = route;
@@ -428,7 +430,32 @@ function render(data) {
     verdict.append(reasons);
   }
   output.append(verdict);
+  if (result.verdict?.scope_note) output.append(element("p", result.verdict.scope_note, "scope-note"));
+  if (result.missing_inputs?.length) output.append(listBlock("Inputs that cannot yet be derived", result.missing_inputs, "missing"));
   if (data.analysis) output.append(interpretation(data.analysis));
+  if (data.analysis?.missing?.length) output.append(listBlock("Still needed for a complete verdict", data.analysis.missing, "missing"));
+  if (result.derivation?.length) {
+    const section = element("section", undefined, "evidence-section");
+    section.append(element("h4", "Input evidence · provided → calculated"),
+      element("p", "Values retain their engine units (K, kW, kJ, kg/s). A balance used to calculate a missing input is not an independent measurement.", "form-note"));
+    const table = element("table", undefined, "extracted evidence-table");
+    const heading = element("tr");
+    for (const label of ["Input", "Value", "Evidence"]) heading.append(element("th", label));
+    table.append(heading);
+    for (const item of result.derivation) {
+      if (item.field.endsWith(".name") || item.field.endsWith("cp_model")) continue;
+      const row = element("tr");
+      const evidence = element("td");
+      evidence.append(element("strong", item.source === "derived" ? "Calculated" : item.source === "mapped" ? "Interpreted from text" : "Provided"));
+      if (item.equation) evidence.append(element("p", item.equation));
+      if (Object.keys(item.dependencies || {}).length) evidence.append(element("small",
+        Object.entries(item.dependencies).map(([key, value]) => key + " = " + pretty(value)).join("; ")));
+      row.append(element("td", item.field.replaceAll("_", " ")), element("td", pretty(item.value)), evidence);
+      table.append(row);
+    }
+    section.append(table);
+    output.append(section);
+  }
   if (Object.keys(data.source_quotes || {}).length && models[data.route] && models[data.route].review !== false) {
     const review = element("button", "Review automatically filled values", "quiet");
     review.type = "button";
@@ -440,7 +467,8 @@ function render(data) {
     const watts = Math.max(Math.abs(claimed), Math.abs(limit)) < 1;
     const power = (value) => number.format(value * (watts ? 1000 : 1)) + (watts ? " W" : " kW");
     const metrics = element("div", undefined, "metrics");
-    for (const [label, value] of [["Claimed output", claimed], ["Ideal ceiling", limit]]) {
+    const derivedWork = result.derivation?.some((item) => item.field === "W_out_kw" && item.source === "derived");
+    for (const [label, value] of [[derivedWork ? "Calculated output" : "Claimed output", claimed], ["Ideal ceiling", limit]]) {
       const card = element("div", label, "metric");
       card.append(element("strong", power(value)));
       metrics.append(card);
@@ -458,7 +486,11 @@ function render(data) {
     }
     output.append(chart);
   }
-  if (result.checks) output.append(details("Balance and limit checks", dataList(result.checks)));
+  if (result.checks) {
+    const checks = details("Balance and limit checks", dataList(result.checks));
+    checks.open = true;
+    output.append(checks);
+  }
   output.append(details("All calculated values", dataList(calc)));
   if (result.assumptions?.length) {
     const assumptions = element("ul");
@@ -586,12 +618,12 @@ $("model-form").addEventListener("submit", (event) => {
   const caseData = {model: spec.engineModel || model};
   for (const [key, , value, , , scale = 1, offset = 0] of spec.fields) {
     const raw = inputs.get(key);
-    if (value === "" && (raw === null || String(raw).trim() === "")) continue;
-    if (raw === null || String(raw).trim() === "") {
-      render({error: "Fill in every labeled value before calculating."});
+    if (raw === null || String(raw).trim() === "") continue;
+    const parsed = typeof value === "number" || value === "" ? Number(raw) * scale + offset : raw.trim();
+    if (typeof parsed === "number" && !Number.isFinite(parsed)) {
+      render({error: "Enter finite numbers for the supplied values."});
       return;
     }
-    const parsed = typeof value === "number" || value === "" ? Number(raw) * scale + offset : raw.trim();
     if (key.includes(".")) {
       const [group, field] = key.split(".");
       caseData[group] ??= {name: group.replace("_", " "), cp_model: "constant"};

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Test a useful-work claim against the laws of thermodynamics with the CL 202 Python engine.">
   <title>ThermoLab | Feasibility Workbench</title>
-  <link rel="stylesheet" href="style.css?v=models10">
-  <script defer src="app.js?v=20261118-exergy-balances"></script>
+  <link rel="stylesheet" href="style.css?v=evidence-20261118">
+  <script defer src="app.js?v=evidence-20261118"></script>
 </head>
 <body>
   <header class="top">
@@ -43,13 +43,14 @@
           <form id="text-form">
             <label for="scenario">What are you testing?</label>
             <textarea id="scenario" rows="6" maxlength="3000" required placeholder="e.g. An inventor claims his engine takes 100 kW of heat from a source at 600 K, rejects heat to surroundings at 300 K and produces 60 kW of work."></textarea>
-            <div class="form-note" id="provider-note">Write the problem the way it appears in a textbook. The tester extracts the numbers, identifies the source and sink, chooses the model, and gives a verdict. Every extracted value and assumption is shown with the result.</div>
+            <div class="form-note" id="provider-note">Write the problem the way it appears in a textbook. The tester extracts the numbers, identifies the source and sink, chooses the model, and gives a verdict. Missing values are calculated when the supplied information determines them. Otherwise, the tester tells you what is still needed; it never assumes missing measurements are zero.</div>
             <div class="samples" id="samples" aria-label="Sample scenarios"></div>
             <div class="actions"><button class="primary" id="analyze-button" type="submit" disabled>Analyze scenario <span aria-hidden="true">→</span></button><button class="quiet" id="reset" type="button">Clear</button></div>
             <p class="form-note" id="interface-loading">Starting the interface… If this message stays, open the site through the local Python server.</p>
           </form>
           <form id="model-form" hidden>
             <label for="model">Thermodynamic model</label><select id="model"></select>
+            <p class="form-note">Leave unknown values blank. We will derive them from your other inputs where possible and explain each calculation. Example values are illustrative; enter your own measurements.</p>
             <div id="fields" class="fields"></div>
             <p class="form-note" id="model-note"></p>
             <button class="primary" type="submit">Calculate result <span aria-hidden="true">→</span></button>
@@ -57,7 +58,7 @@
         </div>
         <div class="panel result-panel" id="result-panel" aria-labelledby="result-title">
           <div class="result-head"><p class="eyebrow" id="result-title">ANALYSIS OUTPUT</p><span id="status" class="badge" role="status">Ready</span></div>
-          <div id="result"><div class="empty"><span class="empty-icon" aria-hidden="true">◎</span><h3>Your results appear here</h3><p>Run a scenario to compare claimed output with the ideal limit and see which checks apply.</p></div></div>
+          <div id="result" aria-live="polite" aria-atomic="false"><div class="empty"><span class="empty-icon" aria-hidden="true">◎</span><h3>Your results appear here</h3><p>Run a scenario to compare claimed output with the ideal limit and see which checks apply.</p></div></div>
 
         </div>
       </div>
@@ -90,7 +91,7 @@
       <div class="section-intro"><p class="eyebrow">04 / UNDERSTAND</p><h2 id="method-title">How the tester decides</h2></div>
       <div class="method-grid"><article><span>01</span><h3>Read and map</h3><p>The analyzer finds each quantity and its unit, decides its role from the surrounding words, and identifies the source, the sink and the claimed output.</p></article>
         <article><span>02</span><h3>Calculate the limit</h3><p>The Python engine applies the selected model and checks energy or entropy balances when the data support them.</p></article>
-        <article><span>03</span><h3>Interpret the verdict</h3><p>A claim below the ceiling is feasible within the model. A claim that breaks a balance or exceeds its limit is rejected. Enter the required values to evaluate a claim.</p></article></div>
+        <article><span>03</span><h3>Interpret the verdict</h3><p>Feasible means the available balances and applicable limit pass within the selected model. Contradictions are rejected. Undetermined inputs remain insufficient data. This is a thermodynamic assessment, not proof of engineering or economic viability.</p></article></div>
     </section>
   </main>
   <footer><span class="brand"><span class="mark">◈</span>Thermo<span>Lab</span></span><span>CL 202 · Thermodynamic Feasibility Tester</span></footer>

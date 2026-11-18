@@ -4,9 +4,47 @@ The GitHub Pages version runs the original Python engine in the visitor's browse
 
 To rebuild the static site after editing the engine or website, run `python build_pages.py`. Publish the `docs` directory through GitHub Pages. The calculation code and downloaded JSON remain available in the shared version.
 
+## Auditable input completion
+
+Unknown form fields may be left blank. For example, enter a source at 600 K,
+ a sink at 300 K, 100 kW heat input and 40 kW rejected heat. The engine derives
+60 kW work, then rejects it against the 50 kW Carnot ceiling. If neither work,
+rejected heat nor efficiency is known, the result remains **insufficient data**.
+
+| Model | Supported completion from independent data |
+|---|---|
+| Reservoir engine | Any one of heat input, work, rejected heat; input/output from efficiency |
+| Finite streams / exchanger | Work, heat duties, constant-Cp flow/Cp/inlet/outlet; linear-Cp outlet inversion |
+| Steady control volume | One missing flow from mass balance; work or one heat interaction from stream energy rates |
+| Closed system | Work, energy change or one heat interaction from the First Law |
+| Property utility | Constant-Cp temperature or heat capacity from enthalpy change; no feasibility verdict |
+| Mechanical | Work from supplied input and measured heat; event energy × frequency basis |
+| Solar | Incident power, irradiance or area; output from efficiency or measured rejected heat |
+| Electrochemical | Work, heat or reaction enthalpy/rate from energy balance; Gibbs energy from supplied enthalpy/entropy/temperature |
+| Unsupported domains | Explicit model-required outcome; no invented thermodynamic mapping |
+
+Derivation runs to a fixed point and never overwrites a supplied value. Equations
+with multiple unknowns or a zero divisor remain unresolved. Entropy generation
+is never set to zero merely to complete a balance. A balance that determined an
+input closes by construction and is labelled accordingly. Mechanical resource
+ceilings are not treated as measured heat losses. Zero heat or zero cycle state
+change is accepted only when explicitly supplied or implied by the selected boundary.
+
+Results show model selection, extraction, input provenance, equation dependencies,
+limiting values, balance checks, remaining inputs and the scoped verdict. The
+natural-language parser supports the documented thermodynamic patterns, not arbitrary
+engineering prose. Use the model form for quantities it cannot map unambiguously.
+Feasibility is thermodynamic admissibility within the chosen model, not proof of
+material, manufacturing, cost or operational viability.
+
+Heat exchangers use strict numerical energy closure by default. An explicit JSON
+`energy_relative_tolerance` may represent known data rounding. Counterflow is the
+default boundary; `flow_arrangement: "parallel"` adds its outlet restriction.
+Zero terminal approach is labelled as an ideal infinite-area limit.
+
 ## One engine, ten numbered models
 
-`thermodynamic_feasibility_tester_MASTER.py` is the single calculation engine for **both** the terminal program and the website, so the model numbers are the same everywhere. It holds only the physics (about 1,280 lines, in eight numbered sections: model registry → validation → verdict logic → properties → balances → the ten models → entry point → terminal program). Demo cases, JSON templates and the 27 self-tests live in `feasibility_examples.py`.
+`thermodynamic_feasibility_tester_MASTER.py` is the single calculation engine for **both** the terminal program and the website, so the model numbers are the same everywhere. Input completion lives in `input_derivation.py`; the master module owns physical validation, balances and verdicts. Demo cases, JSON templates and the 27 self-tests live in `feasibility_examples.py`.
 
 | # | Model (engine key) | Typical technologies | Role |
 |---|---|---|---|
@@ -21,7 +59,7 @@ To rebuild the static site after editing the engine or website, run `python buil
 | 9 | Solar radiation conversion (`solar_blackbody`) | Solar converters (Petela–Landsberg) | Extension |
 | 10 | Electrochemical conversion (`reaction_gibbs`) | Fuel cells (−ΔG × rate) | Extension |
 
-The website's technology examples and the plain-English analyzer are a **mapping layer**: they decide which numbered model applies, and every result is labelled "Model N · …". The terminal menu offers the same ten models (`python thermodynamic_feasibility_tester_MASTER.py`), and `--self-test` runs 26 checks.
+The website's technology examples and the plain-English analyzer are a **mapping layer**: they decide which numbered model applies, and every result is labelled "Model N · …". The terminal menu offers the same ten models (`python thermodynamic_feasibility_tester_MASTER.py`), and `--self-test` runs 27 checks.
 
 Changes in this revision:
 - Model 3 now calculates a reversible shaft-work ceiling from steady-flow physical exergy when every stream has dead-state h0/s0 and an environment temperature T0.
@@ -29,9 +67,9 @@ Changes in this revision:
 - Model 8 now requires measured heat rejection to close the converter First Law and requires its boundary temperature whenever positive heat is rejected, so it can calculate S_gen rather than incorrectly treating all unharvested resource as converter heat loss.
 - Model 9 now reports an energy balance, entropy generation and exergy destruction using an explicit ambient-heat-rejection assumption.
 - Model 10 now requires reaction enthalpy and operating/heat-boundary data to calculate the reaction energy and entropy balances in addition to the Gibbs work limit.
-- Models 1, 2, 5 and 7 retain their prior calculation approach.
+- Models share an auditable input-completion layer; supplied measurements are preserved.
 - Model 1: claimed work above heat input is a NOT FEASIBLE verdict instead of an input error.
-- Model 2: optional `apply_strict_reversible_limit` gives the exact maximum work (cold outlet chosen so that S_gen = 0). The T_eff ratio stays informational.
+- Model 2: `apply_strict_reversible_limit` (enabled by default) gives the exact maximum work (cold outlet chosen so that S_gen = 0). The T_eff ratio stays informational.
 - Model 7: optional `energy_relative_tolerance` for rounded textbook data, and a temperature-cross check.
 
 ## Automatic analysis from a plain-English description
@@ -41,7 +79,7 @@ Paste a problem as it would appear in a textbook and click **Analyze scenario**.
 1. **Scan.** It finds every number with a unit and converts it to engine units. It handles K, °C, °F, kW, MW, kJ/min, Btu/h, kJ per cycle, kg/s, L/min, kJ/(kg K), W/m², m/s, mol/s, g/s and steps/min.
 2. **Assign roles.** It reads the words around each quantity and decides what the quantity is. Examples: heat input, rejected heat, claimed work, source or sink temperature, stream inlet or outlet, wind speed, head, ΔG.
 3. **Map source and sink.** It groups hot and cold streams and separates them from fixed-temperature reservoirs. Then it chooses the domain: thermal, mechanical, wind, hydro, solar or chemical.
-4. **Infer.** It fills at most one gap from the First Law, such as a cold-stream outlet or work = Q_H − Q_C. It also uses clearly labelled defaults, such as Cp of water, air density, sun temperature 5778 K and ambient 298.15 K.
+4. **Infer.** Repeatedly apply uniquely solvable conservation and constitutive equations. Each derived field includes its equation and dependency values. Missing physical properties, densities and boundary temperatures are requested rather than guessed. Explicit efficiency-only normalization bases are labelled; they are not predictions of absolute output.
 5. **Solve.** It builds the standard engine case and runs the original `run_case`.
 
 The result shows the following:
@@ -57,7 +95,7 @@ The thermal mappings work as follows:
 |---|---|
 | Two fixed temperatures, heat and work | Carnot limit, First Law, S_gen = Q_C/T_C − Q_H/T_H |
 | A hot stream (inlet and outlet) and a sink temperature | T_H,eff = \|Δh\|/\|Δs\|, then the Carnot limit. This is exact: W_max = ΔH − T₀ΔS |
-| A hot stream and a cold stream | Finite-stream engine: S_gen = ṁ_hΔs_h + ṁ_cΔs_c and the T_eff reference |
+| A hot stream and a cold stream | Finite-stream engine: S_gen = ṁ_hΔs_h + ṁ_cΔs_c and the exact reversible cold-outlet limit |
 | Cp(T) = a + bT, or latent heat with entropy of fusion | Linear-Cp integrals; phase-change sink T = Δh/Δs |
 | One reservoir only ("converts it entirely into work") | Cycle entropy balance, which gives S_gen < 0 (Kelvin–Planck) |
 
@@ -68,7 +106,7 @@ The other domains use these limits:
 | Wind | Betz limit (16/27)·½ρAv³ |
 | Hydro | ρgQH |
 | Solar | Petela–Landsberg |
-| Fuel cells | −ΔG·ṅ, with standard ΔG for H₂, CH₄, methanol and ethanol if not given |
+| Fuel cells | −ΔG·ṅ, with ΔG supplied at the stated conditions |
 | No energy input | Zero (perpetual-motion claim) |
 
 Refrigerators and heat pumps are reported as outside the useful-work scope.

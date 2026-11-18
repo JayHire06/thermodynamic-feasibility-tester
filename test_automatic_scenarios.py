@@ -64,7 +64,7 @@ class AutomaticScenarioTests(unittest.TestCase):
         self.assertEqual(chemical["prefill"]["W_out_kw"], 2.0)
 
     def test_model3_and_model4_missing_reference_states_offer_manual_inputs(self):
-        cv = solve({"scenario": "A steady steam turbine has inlet 1 kg/s, h=3231.7 kJ/kg and s=6.9235 kJ/kg K; "
+        cv = solve({"scenario": "An adiabatic steady steam turbine has inlet 1 kg/s, h=3231.7 kJ/kg and s=6.9235 kJ/kg K; "
                               "outlet h=2675 kJ/kg and s=7.3589 kJ/kg K. It produces 556.7 kW."})
         self.assertEqual(cv["status"], "needs_values")
         self.assertIn("cv_h_in", cv["prefill"])

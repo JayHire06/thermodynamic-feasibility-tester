@@ -163,14 +163,15 @@ def self_test() -> List[str]:
     assert abs(finite.calculations["heat_released_by_hot_stream_kw"] - 836.0) < 1e-8
     assert finite.calculations["S_gen_dot_kw_per_k"] > 0
     assert finite.checks["first_law"]["passed"]
-    assert finite.verdict.status == "INSUFFICIENT DATA / MODEL REQUIRED"
+    assert finite.verdict.status == "FEASIBLE / NOT REJECTED"
+    assert finite.calculations["strict_reversible_work_limit_kw"] is not None
     passed.append("finite-stream properties, energy consistency and entropy generation")
 
     # Explicitly selected effective-temperature reference is checked but labelled.
     finite_limit_case = demonstration_cases()[3]
     finite_limit = analyse_case(finite_limit_case)
     assert finite_limit.calculations["effective_temperature_efficiency_reference"] is not None
-    assert finite_limit.verdict.status == "INSUFFICIENT DATA / MODEL REQUIRED"
+    assert finite_limit.verdict.status == "FEASIBLE / NOT REJECTED"
     assert finite_limit.checks["effective_temperature_reference_comparison"] == "BELOW REFERENCE"
     passed.append("effective-temperature reference is informational, not a universal feasibility limit")
 
@@ -240,25 +241,25 @@ def self_test() -> List[str]:
     assert bad_cv.verdict.status == "NOT FEASIBLE"
     passed.append("steady control-volume mass conservation check")
 
-    # No independent work claim means no performance verdict, even if a
-    # user elects to display the effective-temperature comparison.
+    # A determined work output can be assessed; its provenance stays derived.
     no_claim = dict(demonstration_cases()[3])
     no_claim.pop("W_out_kw")
     no_claim_result = analyse_case(no_claim)
-    assert no_claim_result.verdict.status == "INSUFFICIENT DATA / MODEL REQUIRED"
-    passed.append("missing independent work claim returns insufficient data")
+    assert no_claim_result.verdict.status == "FEASIBLE / NOT REJECTED"
+    assert no_claim_result.input_status["W_out_kw"] == "DERIVED"
+    passed.append("missing independent work is calculated and checked against the strict limit")
 
     # Missing work outputs are derived only when the balance data determine them.
     derived_closed = analyse_case({"model": "closed_system", "delta_E_kj": 10.0,
         "delta_S_system_kj_K": 0.06, "heat": [{"heat_into_system_kj": 15.0, "boundary_temperature_K": 300.0}]})
     assert abs(derived_closed.inputs["W_out_kj"] - 5.0) < 1e-12
-    assert derived_closed.input_status["W_out_kj"] == "DERIVED FROM CLOSED-SYSTEM FIRST LAW"
+    assert derived_closed.input_status["W_out_kj"] == "DERIVED"
     derived_cv = analyse_case({"model": "steady_control_volume",
         "inlets": [{"mass_flow_kg_s": 1.0, "specific_enthalpy_kj_kg": 100.0, "specific_entropy_kj_kg_k": 1.0}],
         "outlets": [{"mass_flow_kg_s": 1.0, "specific_enthalpy_kj_kg": 80.0, "specific_entropy_kj_kg_k": 1.2}],
         "heat": []})
     assert abs(derived_cv.inputs["W_out_kw"] - 20.0) < 1e-12
-    assert derived_cv.input_status["W_out_kw"] == "DERIVED FROM STEADY-FLOW FIRST LAW"
+    assert derived_cv.input_status["W_out_kw"] == "DERIVED"
     passed.append("safe derivation and provenance tracking for closed-system and steady-CV work")
 
     # Negative entropy generation must be rejected.

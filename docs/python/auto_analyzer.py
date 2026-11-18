@@ -11,9 +11,8 @@ Pipeline
 3. Map     : identify the energy SOURCE and SINK. Hot/cold streams are
              grouped, reservoirs are separated from streams, and the domain
              (thermal, mechanical, wind, hydro, solar, chemical) is chosen.
-4. Infer   : fill at most one gap from the First Law (for example the cold
-             stream outlet) and use clearly labelled textbook defaults
-             (Cp of water, air density, sun temperature, ambient 298.15 K).
+4. Infer   : derive uniquely determined inputs from conservation equations.
+             Physical properties and boundary conditions must be supplied.
 5. Solve   : build the standard engine case and run the ORIGINAL engine
              (thermodynamic_feasibility_tester_MASTER.run_case).
 
@@ -46,26 +45,9 @@ import thermodynamic_feasibility_tester_MASTER as thermo
 # 0. Constants and labelled defaults
 # ============================================================================
 
-T_AMBIENT_DEFAULT_K = 298.15          # standard dead state for thermal sinks
-SOLAR_T_SUN_K = 5778.0                # effective blackbody temperature of the sun
-SOLAR_T_AMBIENT_K = 300.0             # flowchart value for the solar route
-SOLAR_IRRADIANCE_W_M2 = 1000.0        # standard test-condition irradiance
-AIR_DENSITY_KG_M3 = 1.225             # sea-level standard air
-WATER_DENSITY_KG_M3 = 1000.0
+SOLAR_IRRADIANCE_W_M2 = 1000.0  # explicit normalization only for efficiency-only claims
 GRAVITY_M_S2 = 9.81
 BETZ = 16.0 / 27.0
-
-# Typical constant heat capacities, kJ/(kg K). Used only when the text names
-# the substance but gives no Cp; always reported as an assumption.
-CP_DEFAULTS = {
-    "water": (4.18, "liquid water"),
-    "seawater": (3.99, "seawater"),
-    "air": (1.005, "air"),
-    "exhaust gas": (1.10, "combustion/exhaust gas (typical average)"),
-    "nitrogen": (1.04, "nitrogen"),
-    "helium": (5.193, "helium"),
-    "carbon dioxide": (0.846, "carbon dioxide"),
-}
 
 # Standard Gibbs energies at 298.15 K, 1 bar, per mole of fuel, liquid water
 # product (from standard Gibbs energies of formation). Used only when the
@@ -896,6 +878,9 @@ class ScenarioAnalyzer:
             heat = [{"heat_into_cv_kw": sign * self.q[i].value, "boundary_temperature_K": self.q[temps[0]].value}]
             self.record(i, "Heat transfer (+ into the device)", sign * self.q[i].value, "kW", "heat_into_cv_kw")
             self.record(temps[0], "Boundary temperature for that heat", field_name="boundary_temperature_K")
+        if not heats and not self.has(r"\badiabatic\b|\binsulated\b|\bno heat\b"):
+            a.missing.append("Heat interaction, or explicitly state that the device is adiabatic.")
+            return True
         w, wi, _, _ = self.claim()
         case = {"model": "steady_control_volume", "title": a.title, "description": self.text,
                 "inlets": [{"mass_flow_kg_s": mdot, "specific_enthalpy_kj_kg": self.q[h["in"]].value,
@@ -946,6 +931,8 @@ class ScenarioAnalyzer:
             heat.append({"heat_into_system_kj": value, "boundary_temperature_K": self.q[temps[0]].value})
             self.record(i, "Heat transfer (+ into the system)", value, "kJ")
             self.record(temps[0], "Boundary temperature for that heat")
+        if not heat and not self.has(r"\badiabatic\b|\binsulated\b|\bno heat\b"):
+            a.missing.append("Heat interaction, or explicitly state that the closed system is adiabatic.")
         if a.missing:
             return True
         work = [i for i, q in enumerate(self.q) if q.kind == "energy" and q.role == "work_out" and i not in de]
@@ -985,12 +972,8 @@ class ScenarioAnalyzer:
             case.update(cp_model="constant", cp_kj_kg_k=self.q[cps[0]].value)
             self.record(cps[0], "Heat capacity Cp", field_name="cp_kj_kg_k")
         else:
-            subst = next((st.substance for st in self.streams.values() if st.substance in CP_DEFAULTS), None)
-            if subst is None:
-                a.missing.append("Heat capacity Cp of the material (kJ/kg K).")
-                return True
-            case.update(cp_model="constant", cp_kj_kg_k=CP_DEFAULTS[subst][0])
-            a.assumptions.append(f"Cp of {CP_DEFAULTS[subst][1]} not given; {CP_DEFAULTS[subst][0]} kJ/(kg K) used.")
+            a.missing.append("Heat capacity Cp of the material at the stated conditions (kJ/kg K).")
+            return True
         a.mapping += ["Property calculation only (Model 5): Δh = ∫Cp dT, Δs = ∫Cp/T dT, T_eff = |Δh|/|Δs|.",
                       "No device is assessed, so no feasibility verdict is given."]
         a.cases["property_change"] = case
@@ -1082,24 +1065,18 @@ class ScenarioAnalyzer:
             if q.kind == "mass_flow":
                 mflow = q.value
             else:
-                rho = 1025.0 if s.substance == "seawater" else WATER_DENSITY_KG_M3 if s.substance == "water" else None
-                if rho is not None:
-                    mflow = q.value * rho
-                    self.a.assumptions.append(f"Density of {s.substance} taken as {rho:g} kg/m³ to convert "
-                                              f"{q.quote} to {mflow:g} kg/s.")
+                densities = [i for i in s.quantities if self.q[i].kind == "density"]
+                if densities:
+                    mflow = q.value * self.q[densities[0]].value
+                    self.a.inferred.append(f"Mass flow = supplied density × volumetric flow = {mflow:g} kg/s.")
                 else:
-                    self.a.issues.append(f"Volumetric flow {q.quote} given for {s.key}; give its density or mass flow.")
+                    self.a.missing.append(f"Density or mass flow of {s.key}; volumetric flow alone does not determine mass flow.")
         cp = None
         cp_assumed = False
         if cps:
             cp = ("constant", self.q[cps[0]].value)
         elif s.cp_linear:
             cp = ("linear", s.cp_linear[0], s.cp_linear[1])
-        elif s.substance in CP_DEFAULTS:
-            val, name = CP_DEFAULTS[s.substance]
-            cp = ("constant", val)
-            cp_assumed = True
-            self.a.assumptions.append(f"Cp of {name} not given; typical constant value {val:g} kJ/(kg K) used for the {s.key}.")
         return {"key": s.key, "name": s.key, "side": side, "tin": tin, "tout": tout, "flow": flows[0] if flows else None,
                 "m": mflow, "cp": cp, "cp_index": cps[0] if cps else None, "substance": s.substance,
                 "cp_assumed": cp_assumed}
@@ -1201,8 +1178,8 @@ class ScenarioAnalyzer:
                       "Tests: First Law, S_gen = ṁ_hΔs_h + ṁ_cΔs_c ≥ 0, and the exact reversible limit W_max = Q̇_hot − "
                       "Q̇_cold,rev (cold outlet chosen so that S_gen = 0). The T_eff ratio is shown for information only."]
         if w is None:
-            a.issues.append("No claimed output was found; work is inferred from the stream energy balance and only "
-                            "the Second Law can be tested.")
+            a.issues.append("No claimed output was found; work is inferred from the stream energy balance. "
+                            "The Second Law and exact reversible limit are still checked.")
         a.cases["finite_stream_engine"] = case
 
     def _exchanger_case(self, hot, cold) -> None:
@@ -1216,12 +1193,6 @@ class ScenarioAnalyzer:
                 t0 = q.value
                 self.record(i, "Environment temperature T0", field_name="T0_K")
                 break
-        if t0 is None:
-            t0 = T_AMBIENT_DEFAULT_K
-            a.assumptions.append(f"Environment temperature T0 not given; {T_AMBIENT_DEFAULT_K} K (25 °C) is used "
-                                 "only for exergy destruction. It does not affect the verdict.")
-        a.assumptions.append(f"Stated data may be rounded: an energy mismatch up to {EXCHANGER_DATA_TOLERANCE:.1%} of the "
-                             "heat duty is accepted as rounding. The exact mismatch is always reported.")
         q_hot = -hot["m"] * self._dh_ds(hot["cp"], hot["Tin"], hot["Tout"])[0]
         q_cold = cold["m"] * self._dh_ds(cold["cp"], cold["Tin"], cold["Tout"])[0]
         a.inferred += [f"Heat released by the {hot['key']}: Q̇ = ṁ·Δh = {q_hot:.6g} kW.",
@@ -1235,7 +1206,7 @@ class ScenarioAnalyzer:
         a.cases["finite_stream_heat_recovery"] = {
             "model": "finite_stream_heat_recovery", "title": a.title, "description": self.text,
             "hot_stream": self._stream_case(hot), "cold_stream": self._stream_case(cold),
-            "T0_K": t0, "energy_relative_tolerance": EXCHANGER_DATA_TOLERANCE}
+            "T0_K": t0}
 
     def thermal_stream_reservoir(self, st, hot_res, cold_res, side) -> None:
         """Finite stream on one side, isothermal reservoir on the other → T_eff mapping."""
@@ -1259,18 +1230,10 @@ class ScenarioAnalyzer:
                 t_res = self.q[r].value
                 self.record(r, "Sink temperature" if side == "hot" else "Source temperature",
                             field_name="T_cold_K" if side == "hot" else "T_hot_K")
-        elif side == "hot":
-            t_res = T_AMBIENT_DEFAULT_K
-            a.assumptions.append("No sink temperature given: heat is assumed rejected to the surroundings at "
-                                 f"{T_AMBIENT_DEFAULT_K} K (25 °C).")
         else:
-            a.missing.append("Temperature of the heat source.")
+            a.missing.append("Temperature of the heat sink." if side == "hot" else "Temperature of the heat source.")
         if st["Tin"] is None:
             a.missing.append(f"Inlet temperature of the {st['key']}.")
-        if st["Tout"] is None and side == "hot" and t_res is not None and st["Tin"] is not None:
-            st["Tout"] = t_res
-            a.assumptions.append(f"Outlet of the {st['key']} not given: it is taken as cooled to the sink temperature "
-                                 f"({t_res:.2f} K), the maximum heat it can supply. This gives an upper bound.")
         q_heat = None
         if st["m"] is None:
             powers = [i for i, q in enumerate(self.q) if q.kind == "power" and q.role in ("heat_in", "heat_out")]
@@ -1340,10 +1303,14 @@ class ScenarioAnalyzer:
                                       "(the engine checks Q̇_H − Ẇ − Q̇_C = 0).")
             else:
                 q_c_checked = None
-                q_h = q_c + (w or 0.0)
-                if eff is not None and w is None:
+                if w is not None:
+                    q_h = q_c + w
+                elif eff is not None and eff != 1:
                     q_h = q_c / (1 - eff)
                     w = eff * q_h
+                else:
+                    a.missing.append("Heat input or work; the stated efficiency does not determine a finite heat input.")
+                    return
                 a.inferred.append(f"Cold stream: Q̇_C = ṁΔh = {q_c:.5g} kW; Q̇_H = Q̇_C + Ẇ = {q_h:.5g} kW.")
             a.inferred.append(f"Effective sink temperature T_C,eff = Δh/Δs = {t_eff:.5g} K.")
             t_cold = t_eff
@@ -1376,7 +1343,8 @@ class ScenarioAnalyzer:
                 t_cold = self.q[r].value
                 self.record(r, "Sink (cold) temperature", field_name="T_cold_K")
         if len(hot_res) > 1 or len(cold_res) > 1:
-            a.issues.append("More than one source or sink temperature was found; the first of each is used.")
+            a.missing.append("Identify one source and one sink, or use the multiple-boundary model.")
+            return
         q_h = self.q[heat_in[0]].value if heat_in else None
         q_c = self.q[heat_out[0]].value if heat_out else None
         if heat_in:
@@ -1393,18 +1361,18 @@ class ScenarioAnalyzer:
         if w is None and eff is None and q_h is not None and q_c is not None:
             w = q_h - q_c
             a.inferred.append(f"Work output not stated: from the First Law W = Q_H − Q_C = {w:.5g}.")
-            q_c = None
             a.assumptions.append("Rejected heat was used to infer work, so the First Law closes by construction.")
         if q_h is None and w is not None and q_c is not None:
             q_h = w + q_c
             a.inferred.append(f"Heat input not stated: Q_H = W + Q_C = {q_h:.5g}.")
-            q_c = None
         if eff is not None:
             if q_h is None and w is None:
                 q_h = 100.0
                 w = eff * q_h
                 a.assumptions.append("Only an efficiency is claimed: a 100 kW heat-input basis is used "
                                      f"(W = {w:.4g} kW); the verdict does not depend on this basis.")
+            elif q_h is None and eff == 0:
+                a.missing.append("Heat input: zero efficiency does not determine it from work.")
             elif q_h is None:
                 q_h = w / eff
                 a.inferred.append(f"Heat input from the claimed efficiency: Q_H = W/η = {q_h:.5g}.")
@@ -1425,11 +1393,7 @@ class ScenarioAnalyzer:
         if t_hot is not None and t_cold is None and (single or (q_h is not None and w is not None and w >= q_h)):
             return self._kelvin_planck(t_hot, q_h, w)
         if t_hot is not None and t_cold is None:
-            if self.has(r"\b(?:surroundings|environment|atmosphere|ambient)\b"):
-                t_cold = T_AMBIENT_DEFAULT_K
-                a.assumptions.append(f"Sink temperature not given; surroundings taken as {T_AMBIENT_DEFAULT_K} K (25 °C).")
-            else:
-                a.missing.append("Temperature of the sink (where heat is rejected).")
+            a.missing.append("Temperature of the sink (where heat is rejected).")
         if t_hot is None:
             a.missing.append("Temperature of the heat source.")
         if q_h is None:
@@ -1530,12 +1494,12 @@ class ScenarioAnalyzer:
             else:
                 a.missing.append("Recoverable mechanical input: power (W) or energy per step (J) and step rate.")
         if w is None and eff is not None and src is not None:
-            p_in = case.get("recoverable_mechanical_power_kw") or \
-                case["recoverable_energy_per_event_j"] * case["events_per_s"] / 1000
+            p_in = (case["recoverable_mechanical_power_kw"] if case.get("recoverable_mechanical_power_kw") is not None else
+                    case["recoverable_energy_per_event_j"] * case["events_per_s"] / 1000)
             w = eff * p_in
             a.inferred.append(f"Claimed output = {eff:.3g} × {p_in * 1000:.4g} W = {w * 1000:.4g} W.")
-        if w is None:
-            a.missing.append("The claimed electrical output (W).")
+        if w is None and not heat:
+            a.missing.append("The claimed electrical output (W), or measured heat rejection to derive it.")
         else:
             case["W_out_kw"] = w
             if wi is not None:
@@ -1587,12 +1551,12 @@ class ScenarioAnalyzer:
                 a.inferred.append(f"Swept area A = πD²/4 = {area:.5g} m².")
         else:
             a.missing.append("Rotor diameter, blade length or swept area.")
-        rho = AIR_DENSITY_KG_M3
+        rho = None
         if dens:
             rho = self.q[dens[0]].value
             self.record(dens[0], "Air density", field_name="air_density_kg_m3")
         else:
-            a.assumptions.append(f"Air density not given; standard {AIR_DENSITY_KG_M3} kg/m³ used.")
+            a.missing.append("Air density at the rotor (kg/m³).")
         if a.missing:
             if w is None and eff is None:
                 a.missing.append("The claimed power output.")
@@ -1644,10 +1608,14 @@ class ScenarioAnalyzer:
                 a.missing.append("The claimed power output.")
             return
         f = self.q[flows[0]]
-        mdot = f.value * WATER_DENSITY_KG_M3 if f.kind == "vol_flow" else f.value
+        densities = self.of_kind("density")
+        if f.kind == "vol_flow" and not densities:
+            a.missing.append("Water density (kg/m³), or supply mass flow directly.")
+            return
+        mdot = f.value * self.q[densities[0]].value if f.kind == "vol_flow" else f.value
         self.record(flows[0], "Water flow rate", field_name="flow")
         if f.kind == "vol_flow":
-            a.assumptions.append(f"Water density {WATER_DENSITY_KG_M3:g} kg/m³.")
+            self.record(densities[0], "Water density", field_name="density_kg_m3")
         p_max = mdot * GRAVITY_M_S2 * head / 1000.0
         if w is None and eff is not None:
             w = eff * p_max
@@ -1681,11 +1649,9 @@ class ScenarioAnalyzer:
                 t_amb = self.q[i].value
                 self.record(i, "Ambient temperature", field_name="T_ambient_K")
         if t_src is None:
-            t_src = SOLAR_T_SUN_K
-            a.assumptions.append(f"Sun treated as a blackbody at {SOLAR_T_SUN_K} K.")
+            a.missing.append("Radiation source temperature (K) for the blackbody model.")
         if t_amb is None:
-            t_amb = SOLAR_T_AMBIENT_K
-            a.assumptions.append(f"Ambient temperature taken as {SOLAR_T_AMBIENT_K} K.")
+            a.missing.append("Ambient temperature (K).")
         irr = self.of_kind("irradiance")
         areas = self.of_kind("area")
         w, wi, eff, _ = self.claim()
@@ -1705,11 +1671,10 @@ class ScenarioAnalyzer:
             area, g = 1.0, g or SOLAR_IRRADIANCE_W_M2
             a.assumptions.append("Only an efficiency is claimed: a 1 m² basis is used; the verdict does not depend on it.")
         if g is None:
-            g = SOLAR_IRRADIANCE_W_M2
-            a.assumptions.append(f"Irradiance not given; standard {SOLAR_IRRADIANCE_W_M2:g} W/m² used.")
+            a.missing.append("Irradiance at the collection surface (W/m²).")
         if area is None:
             a.missing.append("Collection area (m²).")
-        if w is None and eff is not None and area is not None:
+        if w is None and eff is not None and area is not None and g is not None:
             w = eff * g * area / 1000.0
             a.inferred.append(f"Claimed output = {eff:.3g} × {g:g} W/m² × {area:g} m² = {w:.5g} kW.")
         if w is None:
@@ -1762,10 +1727,6 @@ class ScenarioAnalyzer:
                     delta_g = -delta_g
                     a.inferred.append("Gibbs energy described as released: sign taken as negative (ΔG < 0).")
                 self.record(pick, "Reaction Gibbs energy ΔG", delta_g, "kJ/mol", "delta_G_kj_per_mol_rxn")
-        if delta_g is None and fuel is not None:
-            delta_g = FUEL_GIBBS[fuel][0]
-            a.assumptions.append(f"ΔG not given: standard value for {FUEL_GIBBS[fuel][2]} at 298 K, "
-                                 f"{delta_g} kJ/mol of fuel, is used.")
         if direction is None and fuel is not None:
             direction = FUEL_GIBBS[fuel][2]
         rate = None
@@ -1780,7 +1741,7 @@ class ScenarioAnalyzer:
                 a.inferred.append(f"Molar rate = mass flow / M = {self.q[mflows[0]].value * 1000:.5g} g/s ÷ "
                                   f"{FUEL_GIBBS[fuel][1]} g/mol = {rate:.5g} mol/s.")
         if delta_g is None:
-            a.missing.append("Gibbs energy of reaction ΔG (kJ/mol) or the fuel name.")
+            a.missing.append("Gibbs energy of reaction ΔG (kJ/mol) at the stated operating conditions.")
         if rate is None:
             a.missing.append("Reaction or fuel consumption rate (mol/s or g/s).")
         if direction is None:
@@ -1788,8 +1749,25 @@ class ScenarioAnalyzer:
         if w is None and eff is not None and delta_g is not None and rate is not None:
             w = eff * (-delta_g) * rate
             a.inferred.append("Efficiency taken relative to −ΔG: W = η(−ΔG)ṅ.")
-        if w is None:
-            a.missing.append("The claimed electrical output.")
+        extras = {}
+        for i in dg:
+            if re.search(r"enthalpy|ΔH|delta\s*H", self.ctx(i)[0][-45:], re.I):
+                extras["delta_H_kj_per_mol_rxn"] = self.q[i].value
+                self.record(i, "Reaction enthalpy DeltaH", field_name="delta_H_kj_per_mol_rxn")
+        for i in self.of_kind("temperature"):
+            left = self.ctx(i)[0][-55:]
+            key = ("heat_boundary_temperature_K" if re.search(r"boundary|heat rejection", left, re.I)
+                   else "reaction_temperature_K" if re.search(r"reaction|cell|reactor|operat", left, re.I) else None)
+            if key:
+                extras[key] = self.q[i].value
+                self.record(i, key, field_name=key)
+        heats = [i for i,q in enumerate(self.q) if q.kind == "power" and q.role in ("heat_in", "heat_out")]
+        if len(heats) == 1:
+            i = heats[0]
+            extras["heat_into_reactor_kw"] = (-1 if self.q[i].role == "heat_out" else 1)*self.q[i].value
+            self.record(i, "Signed heat into reactor", extras["heat_into_reactor_kw"], "kW", "heat_into_reactor_kw")
+        if w is None and not all(k in extras for k in ("delta_H_kj_per_mol_rxn", "heat_into_reactor_kw")):
+            a.missing.append("Electrical output, or reaction enthalpy and signed heat transfer to calculate it.")
         if a.missing:
             return
         if wi is not None:
@@ -1801,7 +1779,7 @@ class ScenarioAnalyzer:
         a.title = "Electrochemical converter (Gibbs energy limit)"
         a.cases["reaction_gibbs"] = {"model": "reaction_gibbs", "title": a.title, "description": self.text,
                                      "reaction_direction": direction, "delta_G_kj_per_mol_rxn": delta_g,
-                                     "reaction_rate_mol_rxn_s": rate, "W_out_kw": w}
+                                     "reaction_rate_mol_rxn_s": rate, "W_out_kw": w, **extras}
 
     # ---------------------------------------------------------------- other
     def route_no_input(self) -> None:
@@ -1862,6 +1840,8 @@ def analyze_scenario(text: str) -> Dict[str, Any]:
         analysis.issues.append(str(error))
         return {"status": "error", "route": analysis.model, "analysis": analysis.as_dict(),
                 "source_quotes": analysis.quotes, "cases": {}, "result": None, "error": str(error)}
+    if not analysis.model:
+        analysis.model = _domain_route(analysis.domain)
     if analysis.missing or not analysis.cases:
         if not analysis.missing:
             analysis.missing.append("A complete description of the source, sink and claimed output.")
@@ -1876,6 +1856,11 @@ def analyze_scenario(text: str) -> Dict[str, Any]:
                 "source_quotes": analysis.quotes, "cases": analysis.cases, "result": None,
                 "error": f"The engine rejected the mapped inputs: {error}"}
     result_dict = result.as_dict()
+    for row in result_dict.get("derivation", []):
+        if row["source"] == "provided":
+            row["source"] = "mapped"
+            row["equation"] = "Mapped from the description; see extracted quotations and inference steps."
+    result_dict["input_status"] = {row["field"]: row["source"].upper() for row in result_dict.get("derivation", [])}
     if analysis.assumptions:
         result_dict["verdict"]["reasons"].append(
             "This verdict uses the labelled assumptions listed under 'How the scenario was interpreted'.")

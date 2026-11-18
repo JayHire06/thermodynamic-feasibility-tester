@@ -208,6 +208,8 @@ def _solve(request):
         if auto["status"] == "evaluated":
             auto["calculation_code"] = analysis_code(auto["analysis"]) + calculation_code(auto["route"])
             return _turn_insufficient_into_input_request(auto)
+        if auto["status"] == "needs_values" and auto.get("route"):
+            return auto
 
     # 2. Earlier labelled-phrase extractor (kept for the CL 202 assignments and as a fallback).
     if route is None:

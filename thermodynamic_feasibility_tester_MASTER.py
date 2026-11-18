@@ -115,6 +115,8 @@ class ThermoInputError(ValueError):
 
 
 def number(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ThermoInputError(f"{label} must be numeric, not a boolean.")
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
@@ -181,11 +183,14 @@ class CaseResult:
     verdict: Verdict
     assumptions: List[str]
     input_status: Dict[str, str] = field(default_factory=dict)
+    derivation: List[Dict[str, Any]] = field(default_factory=list)
+    missing_inputs: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
         return {"title": self.title, "model": self.model, "description": self.description, "inputs": self.inputs,
                 "calculations": self.calculations, "checks": self.checks, "verdict": asdict(self.verdict),
-                "assumptions": self.assumptions, "input_status": self.input_status}
+                "assumptions": self.assumptions, "input_status": self.input_status,
+                "derivation": self.derivation, "missing_inputs": self.missing_inputs}
 
 
 def result(case: Dict[str, Any], model: str, default_title: str, inputs, calculations, checks, verdict,
@@ -426,8 +431,10 @@ def _heat_sum(heat, key: str, context: str, label: str, divide_by_T: bool) -> fl
     """sum(Q) or sum(Q/T_boundary) over the heat interactions."""
     total = 0.0
     for item in heat:
-        check_required(item, [key, "boundary_temperature_K"], context)
+        check_required(item, [key], context)
         q = number(item[key], label)
+        if q == 0 and item.get("boundary_temperature_K") is None:
+            continue  # Explicitly zero heat carries zero entropy; no fabricated temperature.
         if divide_by_T:
             q /= positive_temperature(item["boundary_temperature_K"], "Heat boundary temperature")
         total += q
@@ -447,8 +454,8 @@ def steady_cv_energy_balance(inlets, outlets, heat, work_out_kw: float, include_
             h = number(stream["specific_enthalpy_kj_kg"], f"{label} specific enthalpy")
             if not include_kinetic_potential:
                 return h
-            v = number(stream.get("velocity_m_s", 0.0), f"{label} velocity")
-            z = number(stream.get("elevation_m", 0.0), f"{label} elevation")
+            v = number(stream.get("velocity_m_s"), f"{label} velocity")
+            z = number(stream.get("elevation_m"), f"{label} elevation")
             g = number(stream.get("g_m_s2", 9.80665), f"{label} gravity")
             return h + v**2 / 2000.0 + g * z / 1000.0
         return e
@@ -474,9 +481,10 @@ def closed_system_energy_balance(delta_energy_kj: float, heat, work_out_kj: floa
     """Q - W - Delta E = 0."""
     q = 0.0
     for item in heat:
-        check_required(item, ["heat_into_system_kj", "boundary_temperature_K"], "closed-system heat interaction")
+        check_required(item, ["heat_into_system_kj"], "closed-system heat interaction")
         q += number(item["heat_into_system_kj"], "Heat into system")
-        positive_temperature(item["boundary_temperature_K"], "Heat boundary temperature")
+        if item.get("boundary_temperature_K") is not None:
+            positive_temperature(item["boundary_temperature_K"], "Heat boundary temperature")
     delta_e, work = number(delta_energy_kj, "Delta E"), number(work_out_kj, "Work out")
     return balance(q - work - delta_e, max(abs(q), abs(work), abs(delta_e), 1.0), "Q_into - W_out - Delta E = 0", "kJ")
 
@@ -595,7 +603,7 @@ def analyse_finite_stream_engine(case: Dict[str, Any]) -> CaseResult:
         if use_teff:
             raise ThermoInputError(teff_note)
     # Optional exact limit: the cold outlet that makes S_gen = 0 gives W_max = Q_hot - Q_cold,rev.
-    use_strict, t_rev, strict_limit = bool(case.get("apply_strict_reversible_limit", False)), None, None
+    use_strict, t_rev, strict_limit = bool(case.get("apply_strict_reversible_limit", True)), None, None
     if use_strict:
         t_rev = reversible_cold_outlet_temperature(case["cold_stream"], -hot["delta_S_dot_kw_k"])
         strict_limit = q_hot - stream_properties(dict(case["cold_stream"], T_out_K=t_rev))["delta_H_dot_kw"]
@@ -621,7 +629,7 @@ def analyse_finite_stream_engine(case: Dict[str, Any]) -> CaseResult:
          "strict_reversible_work_limit_kw": strict_limit},
         {"first_law": asdict(energy), "second_law": second_law(sgen),
          "process_classification": process_classification(sgen, energy, performance_limit_passed=(
-             None if not use_teff or teff_ref is None else within_limit(work, teff_ref))),
+             None if strict_limit is None else within_limit(work, strict_limit))),
          "effective_temperature_reference_comparison": ("NOT AVAILABLE" if teff_ref is None else
              "BELOW REFERENCE" if within_limit(work, teff_ref) else "ABOVE REFERENCE"),
          "effective_temperature_limit_note": teff_note,
@@ -673,8 +681,8 @@ def analyse_steady_control_volume(case: Dict[str, Any]) -> CaseResult:
             s0 = number(stream["specific_entropy_dead_state_kj_kg_k"], f"{label} dead-state entropy")
             psi = h - h0 - T0 * (entropy - s0)
             if kepe:
-                v = number(stream.get("velocity_m_s", 0.0), f"{label} velocity")
-                z = number(stream.get("elevation_m", 0.0), f"{label} elevation")
+                v = number(stream.get("velocity_m_s"), f"{label} velocity")
+                z = number(stream.get("elevation_m"), f"{label} elevation")
                 g = number(stream.get("g_m_s2", 9.80665), f"{label} gravity")
                 psi += v**2 / 2000.0 + g * z / 1000.0
             return mdot * psi
@@ -682,7 +690,7 @@ def analyse_steady_control_volume(case: Dict[str, Any]) -> CaseResult:
         ex_out = sum(flow_exergy(x, "Outlet") for x in outlets)
         ex_heat = sum(number(x["heat_into_cv_kw"], "Heat into CV") *
                       (1.0 - T0 / positive_temperature(x["boundary_temperature_K"], "Heat boundary temperature"))
-                      for x in heat)
+                      for x in heat if number(x["heat_into_cv_kw"], "Heat into CV") != 0)
         work_limit = ex_in - ex_out + ex_heat
         exergy = {"inlet_flow_exergy_kw": ex_in, "outlet_flow_exergy_kw": ex_out,
                   "heat_transfer_exergy_kw": ex_heat, "environment_temperature_K": T0,
@@ -725,7 +733,7 @@ def analyse_closed_system(case: Dict[str, Any]) -> CaseResult:
         dS = number(case["delta_S_system_kj_K"], "Delta S")
         heat_exergy = sum(number(x["heat_into_system_kj"], "Heat into system") *
                           (1.0 - T0 / positive_temperature(x["boundary_temperature_K"], "Heat boundary temperature"))
-                          for x in heat)
+                          for x in heat if number(x["heat_into_system_kj"], "Heat into system") != 0)
         work_limit = -(dE + p0 * dV - T0 * dS) + heat_exergy
         useful_work = number(case["W_out_kj"], "Work out") - p0 * dV
         exergy = {"environment_temperature_K": T0, "environment_pressure_kPa": p0,
@@ -791,6 +799,36 @@ def analyse_unsupported_domain(case: Dict[str, Any]) -> CaseResult:
          "The assessment requires a supported route and its physical input data."])
 
 
+def exchanger_minimum_approach(hot, cold, duty):
+    """Exact counterflow minimum for constant/linear Cp, including an internal pinch.
+
+    Along heat coordinate q from hot outlet/cold inlet, C(q)^2 =
+    [mdot Cp(T_start)]^2 + 2 mdot b q. Stationary temperature difference
+    therefore has at most one root, where the two capacity rates are equal.
+    """
+    def curve(stream, start):
+        mass = positive(stream["mass_flow_kg_s"], "Mass flow")
+        if stream.get("cp_model") == "linear":
+            a, b = number(stream["a"], "Cp intercept"), number(stream["b"], "Cp slope")
+        else:
+            a, b = positive(stream["cp_kj_kg_k"], "Cp"), 0.0
+        cp = positive(a + b*start, "Cp at profile start")
+        def temperature(q):
+            discriminant = cp*cp + 2*b*q/mass
+            if discriminant <= 0:
+                raise ThermoInputError("The exchanger profile leaves the positive-Cp range.")
+            return start + 2*q/mass/(cp + math.sqrt(discriminant))
+        return (mass*cp)**2, 2*mass*b, temperature
+    h0, h1, ht = curve(hot, hot["T_out_K"])
+    c0, c1, ct = curve(cold, cold["T_in_K"])
+    candidates = [0.0, duty]
+    if h1 != c1:
+        root = (c0-h0)/(h1-c1)
+        if 0 < root < duty:
+            candidates.append(root)
+    return min((ht(q)-ct(q), q) for q in candidates)
+
+
 def analyse_finite_stream_heat_recovery(case: Dict[str, Any]) -> CaseResult:
     """Model 7: insulated exchanger — energy closure, S_gen >= 0, no temperature cross, exergy destroyed."""
     hot, cold, q_hot, q_cold = _two_streams(case, "finite-stream heat-recovery exchanger",
@@ -809,7 +847,22 @@ def analyse_finite_stream_heat_recovery(case: Dict[str, Any]) -> CaseResult:
     hs, cs = case["hot_stream"], case["cold_stream"]
     cross = [text for text, bad in (
         ("cold outlet is hotter than the hot inlet", number(cs["T_out_K"], "Cold outlet") > number(hs["T_in_K"], "Hot inlet")),
+        ("hot outlet is colder than the cold inlet", number(hs["T_out_K"], "Hot outlet") < number(cs["T_in_K"], "Cold inlet")),
         ("cold inlet is not colder than the hot inlet", number(cs["T_in_K"], "Cold inlet") >= number(hs["T_in_K"], "Hot inlet"))) if bad]
+    arrangement = case.get("flow_arrangement", "counterflow")
+    if arrangement not in {"counterflow", "parallel"}:
+        raise ThermoInputError("flow_arrangement must be counterflow or parallel.")
+    if arrangement == "parallel" and cs["T_out_K"] > hs["T_out_K"]:
+        cross.append("cold outlet exceeds hot outlet in parallel flow")
+    approach = min(hs["T_in_K"] - (cs["T_out_K"] if arrangement == "counterflow" else cs["T_in_K"]),
+                   hs["T_out_K"] - (cs["T_in_K"] if arrangement == "counterflow" else cs["T_out_K"]))
+    heat_limit = min(-stream_properties(dict(hs, T_out_K=cs["T_in_K"]))["delta_H_dot_kw"],
+                     stream_properties(dict(cs, T_out_K=hs["T_in_K"]))["delta_H_dot_kw"])
+    profile_approach, pinch_duty = (approach, None)
+    if arrangement == "counterflow" and energy.passed:
+        profile_approach, pinch_duty = exchanger_minimum_approach(hs, cs, min(q_hot, q_cold))
+        if profile_approach < -ABS_TOL:
+            cross.append("temperature profiles cross inside the exchanger")
     sgen = hot["delta_S_dot_kw_k"] + cold["delta_S_dot_kw_k"]
     t0 = case.get("T0_K")
     exergy = None if t0 is None else positive_temperature(t0, "Reference environment temperature") * sgen
@@ -841,10 +894,14 @@ def analyse_finite_stream_heat_recovery(case: Dict[str, Any]) -> CaseResult:
          "hot_stream_entropy_rate_change_kw_per_k": hot["delta_S_dot_kw_k"],
          "cold_stream_entropy_rate_change_kw_per_k": cold["delta_S_dot_kw_k"],
          "S_gen_dot_kw_per_k": sgen, "exergy_destroyed_kw": exergy,
+         "heat_transfer_upper_limit_kw": heat_limit, "minimum_terminal_approach_K": approach,
+         "minimum_profile_approach_K": profile_approach, "pinch_heat_coordinate_kw": pinch_duty,
          "exergy_destruction_note": ("T0*S_gen; available only when the reference environment temperature T0 is supplied."
                                      if t0 is not None else "Not calculated: supply T0_K to calculate exergy destruction.")},
         {"first_law": asdict(energy), "second_law": second_law(sgen),
          "terminal_temperature_check": "PASS" if not cross else "FAIL: " + "; ".join(cross),
+         "flow_arrangement": arrangement,
+         "limiting_case": "Zero terminal approach is an ideal infinite-area limit" if approach == 0 else "Finite terminal approach",
          "process_classification": classification,
          "performance_limit": "Not assessed: this is a heat-recovery exchanger, not a work-producing engine."},
         verdict,
@@ -981,7 +1038,8 @@ def analyse_solar_blackbody(case: Dict[str, Any]) -> CaseResult:
     fraction = (1-r)**2 * (r**2 + 2*r + 3) / 3
     exergy_in = incident * fraction
     claimed = inputs["W_out_kw"]
-    heat_rejected = incident - claimed
+    heat_rejected = (incident - claimed if case.get("heat_rejected_kw") is None
+                     else resource_number(case, "heat_rejected_kw"))
     energy = balance(incident - claimed - heat_rejected, max(incident, claimed, abs(heat_rejected), 1.0),
                      "P_radiation,in - P_electrical,out - Qdot_rejected = 0", "kW")
     sgen = (exergy_in - claimed) / ambient
@@ -1084,57 +1142,10 @@ REQUIRED = {"fixed_reservoir_engine": ["T_hot_K", "T_cold_K", "Q_hot_kw", "W_out
 
 
 def _resolve_case_inputs(case: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """Derive only values the First Law fixes uniquely, and label every input."""
-    resolved, model = dict(case), str(case.get("model", "")).lower()
-    status = {k: "GIVEN" if v is not None else "NOT PROVIDED" for k, v in case.items() if k not in {"model", "title", "description"}}
-    checked = "GIVEN — CHECKED AGAINST FIRST LAW"
-    if model == "fixed_reservoir_engine":
-        if case.get("Q_cold_rejected_kw") is None and all(case.get(k) is not None for k in ("Q_hot_kw", "W_out_kw")):
-            q_c = number(case["Q_hot_kw"], "Heat input") - number(case["W_out_kw"], "Work output")
-            if q_c >= 0:
-                resolved["Q_cold_rejected_kw"], status["Q_cold_rejected_kw"] = q_c, "DERIVED FROM FIRST LAW"
-            else:
-                status["Q_cold_rejected_kw"] = "CANNOT BE DERIVED — CLAIMED WORK EXCEEDS HEAT INPUT"
-        elif case.get("Q_cold_rejected_kw") is not None:
-            status["Q_cold_rejected_kw"] = checked
-    elif model == "finite_stream_engine":
-        if case.get("W_out_kw") is None and isinstance(case.get("hot_stream"), dict) and isinstance(case.get("cold_stream"), dict):
-            status["W_out_kw"] = "DERIVED FROM STREAM ENERGY BALANCE (NOT A CLAIM)"
-        elif case.get("W_out_kw") is not None:
-            status["W_out_kw"] = "GIVEN — CHECKED AGAINST STREAM ENERGY BALANCE"
-    elif model == "steady_control_volume":
-        if (case.get("W_out_kw") is None and isinstance(case.get("inlets"), list)
-                and isinstance(case.get("outlets"), list) and isinstance(case.get("heat", []), list)):
-            kepe = bool(case.get("include_kinetic_potential", False))
-            def rate(s):  # mdot (h + V^2/2 + g z)
-                e = number(s.get("specific_enthalpy_kj_kg"), "Specific enthalpy")
-                if kepe:
-                    e += (number(s.get("velocity_m_s", 0.0), "Stream velocity") ** 2 / 2000.0
-                          + 9.80665 * number(s.get("elevation_m", 0.0), "Stream elevation") / 1000.0)
-                return positive(s.get("mass_flow_kg_s"), "Stream mass flow") * e
-            resolved["W_out_kw"] = (sum(number(x.get("heat_into_cv_kw"), "Heat rate") for x in case.get("heat", []))
-                                    + sum(map(rate, case["inlets"])) - sum(map(rate, case["outlets"])))
-            status["W_out_kw"] = "DERIVED FROM STEADY-FLOW FIRST LAW"
-        elif case.get("W_out_kw") is not None:
-            status["W_out_kw"] = checked
-    elif model == "closed_system":
-        if case.get("W_out_kj") is None and case.get("delta_E_kj") is not None and isinstance(case.get("heat"), list):
-            resolved["W_out_kj"] = (sum(number(x.get("heat_into_system_kj"), "Heat transfer") for x in case["heat"])
-                                    - number(case["delta_E_kj"], "Delta E"))
-            status["W_out_kj"] = "DERIVED FROM CLOSED-SYSTEM FIRST LAW"
-        elif case.get("W_out_kj") is not None:
-            status["W_out_kj"] = checked
-    for key in REQUIRED.get(model, []):
-        if resolved.get(key) is None:
-            status[key] = "REQUIRED — MISSING"
-    if model == "finite_stream_heat_recovery":
-        status["W_out_kw"] = "NOT APPLICABLE — NO SHAFT-WORK INTERACTION IN THIS MODEL"
-    if model == "fixed_reservoir_engine" and case.get("Q_cold_rejected_kw") is None and "Q_cold_rejected_kw" not in status:
-        status["Q_cold_rejected_kw"] = ("DERIVED FROM FIRST LAW" if resolved.get("Q_cold_rejected_kw") is not None
-                                        else "REQUIRED — CANNOT DERIVE WITHOUT Q_H AND W_OUT")
-    if model == "finite_stream_engine" and "apply_effective_temperature_limit" not in status:
-        status["apply_effective_temperature_limit"] = "NOT APPLICABLE — OPTIONAL COMPARISON DISABLED"
-    return resolved, status
+    """Compatibility wrapper for the shared derivation engine."""
+    from input_derivation import resolve_inputs
+    resolved, evidence, _ = resolve_inputs(case)
+    return resolved, {row["field"]: row["source"].upper() for row in evidence}
 
 
 def _exchanger_steps(case: Dict[str, Any], c: Dict[str, Any]) -> List[str]:
@@ -1165,14 +1176,35 @@ def analyse_case(case: Dict[str, Any]) -> CaseResult:
     model = str(case["model"]).lower()
     if model not in ANALYSERS:
         raise ThermoInputError(f"Unknown model '{model}'. Supported model keys: {', '.join(ANALYSERS)}.")
-    resolved, status = _resolve_case_inputs(case)
-    res = ANALYSERS[model](resolved)
-    res.input_status = status
+    from input_derivation import resolve_inputs, missing_inputs
+    resolved, evidence, conflicts = resolve_inputs(case)
+    # Exergy reference data is optional for detecting violations; the model
+    # reports an incomplete verdict if it cannot establish the work ceiling.
+    optional = {"T0_K", "environment_pressure_kPa", "delta_V_m3"}
+    required = [k for k in REQUIRED.get(model, []) if k not in optional]
+    missing = missing_inputs(resolved, required)
+    if missing and model not in {"mechanical_power", "solar_blackbody", "reaction_gibbs"}:
+        res = result(resolved, model, MODELS[model]["name"], resolved, {}, {},
+                     Verdict("INSUFFICIENT DATA / MODEL REQUIRED",
+                             ["Cannot uniquely derive: " + ", ".join(missing) + ". Supply independent measurements or state data."]), [])
+    else:
+        res = ANALYSERS[model](resolved)
+    res.derivation = evidence
+    res.missing_inputs = missing
+    res.input_status = {row["field"]: row["source"].upper() for row in evidence}
+    res.input_status.update({key: "REQUIRED — MISSING" for key in missing})
     res.checks["model_selection_guidance"] = MODELS[model]["guidance"]
     res.checks["model_number"] = model_label(model)
     res.calculations["governing_equations"] = MODELS[model]["equations"]
-    if model == "finite_stream_heat_recovery":
+    derived = [row["field"] for row in evidence if row["source"] == "derived"]
+    if derived:
+        res.checks["derivation_note"] = ("Balances used to derive an input close by construction; they are not independent validation. "
+                                          "The entropy and limiting-value checks still apply.")
+    if conflicts:
+        res.verdict = Verdict("NOT FEASIBLE", res.verdict.reasons + conflicts)
+    if model == "finite_stream_heat_recovery" and not missing:
         res.calculations["calculation_steps"] = _exchanger_steps(resolved, res.calculations)
+
     return res
 
 
