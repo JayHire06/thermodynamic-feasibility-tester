@@ -56,7 +56,7 @@ def base_assignment(suffix):
             "cp_kj_kg_k": WATER_CP_KJ_KG_K,
         },
         "W_out_kw": claimed_kw,
-        "apply_effective_temperature_limit": True,
+        "apply_strict_reversible_limit": True,
     }
     result = thermo.run_case(case)
     calc = result.calculations

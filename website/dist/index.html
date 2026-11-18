@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Test a useful-work claim against the laws of thermodynamics with the CL 202 Python engine.">
   <title>ThermoLab | Feasibility Workbench</title>
-  <link rel="stylesheet" href="style.css">
-  <script defer src="app.js?v=github-pages-4"></script>
+  <link rel="stylesheet" href="style.css?v=models10">
+  <script defer src="app.js?v=20261118-exergy-balances"></script>
 </head>
 <body>
   <header class="top">
     <a class="brand" href="#" aria-label="ThermoLab home"><span class="mark">◈</span>Thermo<span>Lab</span></a>
-    <nav aria-label="Main navigation"><a href="#workbench">Workbench</a><a href="#examples">Examples</a><a href="#method">Method</a></nav>
+    <nav aria-label="Main navigation"><a href="#workbench">Workbench</a><a href="#examples">Examples</a><a href="#models">Models</a><a href="#method">Method</a></nav>
     <span class="course">CL 202</span>
   </header>
   <main>
@@ -42,8 +42,9 @@
           <div class="modes" aria-label="Input method"><button type="button" id="text-tab" aria-pressed="true">Describe a scenario</button><button type="button" id="model-tab" aria-pressed="false">Enter model inputs</button></div>
           <form id="text-form">
             <label for="scenario">What are you testing?</label>
-            <textarea id="scenario" rows="5" maxlength="3000" required placeholder="Can I generate electricity by walking?"></textarea>
-            <div class="form-note" id="provider-note">Include the temperatures, flow rates, heat capacities and claimed output. Complete supported scenarios run directly to a verdict. Extracted values and calculation code are shown with the result.</div>
+            <textarea id="scenario" rows="6" maxlength="3000" required placeholder="e.g. An inventor claims his engine takes 100 kW of heat from a source at 600 K, rejects heat to surroundings at 300 K and produces 60 kW of work."></textarea>
+            <div class="form-note" id="provider-note">Write the problem the way it appears in a textbook. The tester extracts the numbers, identifies the source and sink, chooses the model, and gives a verdict. Every extracted value and assumption is shown with the result.</div>
+            <div class="samples" id="samples" aria-label="Sample scenarios"></div>
             <div class="actions"><button class="primary" id="analyze-button" type="submit" disabled>Analyze scenario <span aria-hidden="true">→</span></button><button class="quiet" id="reset" type="button">Clear</button></div>
             <p class="form-note" id="interface-loading">Starting the interface… If this message stays, open the site through the local Python server.</p>
           </form>
@@ -67,9 +68,27 @@
       <div id="example-list" class="examples"></div>
     </section>
 
+    <section class="section" id="models" aria-labelledby="models-title">
+      <div class="section-intro"><p class="eyebrow">03 / MODELS</p><h2 id="models-title">Which model checks which technology</h2><p>The website and the terminal program use the same engine file and the same model numbers. You choose a technology or describe a problem; the mapping layer sends it to one of these models.</p></div>
+      <div class="model-map-wrap"><table class="model-map">
+        <thead><tr><th>#</th><th>Thermodynamic model</th><th>Technologies and examples</th><th>What it checks</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td><strong>Fixed-temperature reservoir cyclic heat engine</strong></td><td>Inventor’s engine, Stirling engine, power plant with given source and sink temperatures</td><td>Carnot limit, First Law, S<sub>gen</sub></td><td><span class="role core">Core</span></td></tr>
+          <tr><td class="num">2</td><td><strong>Finite hot stream + finite cold stream (work produced)</strong></td><td>Waste-heat engines, CL 202 Base (coffee from GPU waste heat)</td><td>Exact limit with S<sub>gen</sub> = 0; T<sub>eff</sub> shown for information</td><td><span class="role core">Core</span></td></tr>
+          <tr><td class="num">3</td><td><strong>General steady control volume</strong></td><td>Turbines, compressors, nozzles, pumps (h and s from tables)</td><td>Mass, energy and entropy balances</td><td><span class="role core">Core</span></td></tr>
+          <tr><td class="num">4</td><td><strong>Closed system</strong></td><td>Piston-cylinder, sealed tank, cycles with several reservoirs, “all heat into work” claims</td><td>Energy balance and S<sub>gen</sub> = ΔS − ΣQ/T</td><td><span class="role core">Core</span></td></tr>
+          <tr><td class="num">5</td><td><strong>Property changes only</strong></td><td>Δh, Δs, effective temperature, phase-change temperature (used in CL 202 Modified)</td><td>Calculation utility — no verdict</td><td><span class="role utility">Utility</span></td></tr>
+          <tr><td class="num">6</td><td><strong>Unsupported / future domain</strong></td><td>Refrigerators and heat pumps, tidal, transient systems</td><td>Fallback — “model required”</td><td><span class="role fallback">Fallback</span></td></tr>
+          <tr><td class="num">7</td><td><strong>Heat exchanger (no shaft work)</strong></td><td>Heat recovery, data-centre coolant, oil–water exchanger</td><td>Energy closure, S<sub>gen</sub>, temperature cross, exergy destroyed</td><td><span class="role core">Core</span></td></tr>
+          <tr><td class="num">8</td><td><strong>Mechanical energy harvesting</strong></td><td>Walking generator (both input styles), pedalling, wind (Betz), hydro (ρgQH), no-input claims</td><td>Output ≤ recoverable mechanical input</td><td><span class="role extension">Extension</span></td></tr>
+          <tr><td class="num">9</td><td><strong>Solar radiation conversion</strong></td><td>Solar panels and converters</td><td>Petela–Landsberg limit</td><td><span class="role extension">Extension</span></td></tr>
+          <tr><td class="num">10</td><td><strong>Electrochemical conversion</strong></td><td>Fuel cells (H<sub>2</sub>, methane, methanol, ethanol)</td><td>−ΔG × reaction rate</td><td><span class="role extension">Extension</span></td></tr>
+        </tbody></table></div>
+      <p class="model-map-note">Models 1–7 are the core thermodynamic models of the M3 terminal program. Model 5 is a calculation utility and Model 6 a fallback. Models 8–10 are domain extensions for technologies that are not heat engines, so no Carnot temperature is invented for them.</p>
+    </section>
     <section class="section method" id="method" aria-labelledby="method-title">
-      <div class="section-intro"><p class="eyebrow">03 / UNDERSTAND</p><h2 id="method-title">How the tester decides</h2></div>
-      <div class="method-grid"><article><span>01</span><h3>Define the boundary</h3><p>Identify what supplies energy, what receives it, and the useful output being claimed.</p></article>
+      <div class="section-intro"><p class="eyebrow">04 / UNDERSTAND</p><h2 id="method-title">How the tester decides</h2></div>
+      <div class="method-grid"><article><span>01</span><h3>Read and map</h3><p>The analyzer finds each quantity and its unit, decides its role from the surrounding words, and identifies the source, the sink and the claimed output.</p></article>
         <article><span>02</span><h3>Calculate the limit</h3><p>The Python engine applies the selected model and checks energy or entropy balances when the data support them.</p></article>
         <article><span>03</span><h3>Interpret the verdict</h3><p>A claim below the ceiling is feasible within the model. A claim that breaks a balance or exceeds its limit is rejected. Enter the required values to evaluate a claim.</p></article></div>
     </section>

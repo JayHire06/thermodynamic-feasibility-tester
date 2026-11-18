@@ -4,6 +4,84 @@ The GitHub Pages version runs the original Python engine in the visitor's browse
 
 To rebuild the static site after editing the engine or website, run `python build_pages.py`. Publish the `docs` directory through GitHub Pages. The calculation code and downloaded JSON remain available in the shared version.
 
+## One engine, ten numbered models
+
+`thermodynamic_feasibility_tester_MASTER.py` is the single calculation engine for **both** the terminal program and the website, so the model numbers are the same everywhere. It holds only the physics (about 1,280 lines, in eight numbered sections: model registry → validation → verdict logic → properties → balances → the ten models → entry point → terminal program). Demo cases, JSON templates and the 27 self-tests live in `feasibility_examples.py`.
+
+| # | Model (engine key) | Typical technologies | Role |
+|---|---|---|---|
+| 1 | Fixed-temperature reservoir cyclic heat engine (`fixed_reservoir_engine`) | Heat engines with given source and sink temperatures | Core |
+| 2 | Finite hot + cold stream, work produced (`finite_stream_engine`) | Waste-heat engines, CL 202 Base | Core |
+| 3 | General steady control volume (`steady_control_volume`) | Turbines, compressors, nozzles, pumps | Core |
+| 4 | Closed system (`closed_system`) | Piston-cylinder, sealed tank, multi-reservoir cycles | Core |
+| 5 | Property changes only (`property_change`) | Δh, Δs, T_eff, phase-change temperature | Utility |
+| 6 | Unsupported / future domain (`unsupported_domain`) | Refrigerators, heat pumps, tidal, transient | Fallback |
+| 7 | Heat exchanger, no shaft work (`finite_stream_heat_recovery`) | Heat recovery, data-centre coolant | Core |
+| 8 | Mechanical energy harvesting (`mechanical_power`) | Walking, pedalling, wind (Betz), hydro (ρgQH) | Extension |
+| 9 | Solar radiation conversion (`solar_blackbody`) | Solar converters (Petela–Landsberg) | Extension |
+| 10 | Electrochemical conversion (`reaction_gibbs`) | Fuel cells (−ΔG × rate) | Extension |
+
+The website's technology examples and the plain-English analyzer are a **mapping layer**: they decide which numbered model applies, and every result is labelled "Model N · …". The terminal menu offers the same ten models (`python thermodynamic_feasibility_tester_MASTER.py`), and `--self-test` runs 26 checks.
+
+Changes in this revision:
+- Model 3 now calculates a reversible shaft-work ceiling from steady-flow physical exergy when every stream has dead-state h0/s0 and an environment temperature T0.
+- Model 4 now calculates a reversible useful-work ceiling from non-flow exergy when T0, environment pressure p0 and ΔV are supplied.
+- Model 8 now requires measured heat rejection to close the converter First Law and requires its boundary temperature whenever positive heat is rejected, so it can calculate S_gen rather than incorrectly treating all unharvested resource as converter heat loss.
+- Model 9 now reports an energy balance, entropy generation and exergy destruction using an explicit ambient-heat-rejection assumption.
+- Model 10 now requires reaction enthalpy and operating/heat-boundary data to calculate the reaction energy and entropy balances in addition to the Gibbs work limit.
+- Models 1, 2, 5 and 7 retain their prior calculation approach.
+- Model 1: claimed work above heat input is a NOT FEASIBLE verdict instead of an input error.
+- Model 2: optional `apply_strict_reversible_limit` gives the exact maximum work (cold outlet chosen so that S_gen = 0). The T_eff ratio stays informational.
+- Model 7: optional `energy_relative_tolerance` for rounded textbook data, and a temperature-cross check.
+
+## Automatic analysis from a plain-English description
+
+Paste a problem as it would appear in a textbook and click **Analyze scenario**. `auto_analyzer.py` then runs five steps:
+
+1. **Scan.** It finds every number with a unit and converts it to engine units. It handles K, °C, °F, kW, MW, kJ/min, Btu/h, kJ per cycle, kg/s, L/min, kJ/(kg K), W/m², m/s, mol/s, g/s and steps/min.
+2. **Assign roles.** It reads the words around each quantity and decides what the quantity is. Examples: heat input, rejected heat, claimed work, source or sink temperature, stream inlet or outlet, wind speed, head, ΔG.
+3. **Map source and sink.** It groups hot and cold streams and separates them from fixed-temperature reservoirs. Then it chooses the domain: thermal, mechanical, wind, hydro, solar or chemical.
+4. **Infer.** It fills at most one gap from the First Law, such as a cold-stream outlet or work = Q_H − Q_C. It also uses clearly labelled defaults, such as Cp of water, air density, sun temperature 5778 K and ambient 298.15 K.
+5. **Solve.** It builds the standard engine case and runs the original `run_case`.
+
+The result shows the following:
+- Each extracted value next to the phrase it came from.
+- The source and sink mapping.
+- Every calculated value and assumption.
+
+If something essential is missing or ambiguous, for example a claimed output given as a range, the site lists exactly what to add instead of guessing. If the automatic analyzer identifies a supported model but the thermodynamic solver still needs a reference state or balance term, the website opens the corresponding model form and pre-fills the quantities it safely extracted.
+
+The thermal mappings work as follows:
+
+| Description contains | Model used |
+|---|---|
+| Two fixed temperatures, heat and work | Carnot limit, First Law, S_gen = Q_C/T_C − Q_H/T_H |
+| A hot stream (inlet and outlet) and a sink temperature | T_H,eff = \|Δh\|/\|Δs\|, then the Carnot limit. This is exact: W_max = ΔH − T₀ΔS |
+| A hot stream and a cold stream | Finite-stream engine: S_gen = ṁ_hΔs_h + ṁ_cΔs_c and the T_eff reference |
+| Cp(T) = a + bT, or latent heat with entropy of fusion | Linear-Cp integrals; phase-change sink T = Δh/Δs |
+| One reservoir only ("converts it entirely into work") | Cycle entropy balance, which gives S_gen < 0 (Kelvin–Planck) |
+
+The other domains use these limits:
+
+| Domain | Limit |
+|---|---|
+| Wind | Betz limit (16/27)·½ρAv³ |
+| Hydro | ρgQH |
+| Solar | Petela–Landsberg |
+| Fuel cells | −ΔG·ṅ, with standard ΔG for H₂, CH₄, methanol and ethanol if not given |
+| No energy input | Zero (perpetual-motion claim) |
+
+Refrigerators and heat pumps are reported as outside the useful-work scope.
+
+From the terminal:
+
+```powershell
+python auto_analyzer.py "An inventor claims his engine takes 100 kW of heat from a source at 600 K, rejects heat to surroundings at 300 K and produces 60 kW of work."
+python auto_analyzer.py --json "A wind turbine with 40 m rotor diameter in 10 m/s wind claims 800 kW."
+```
+
+`test_auto_analyzer.py` checks the five M3 validation cases written as prose, and more than 15 textbook-style scenarios across all domains.
+
 ## Interactive website
 
 Double-click `Start_ThermoLab.cmd` to open the local website on an available port. Keep the terminal open while using it. You can also start it from this folder with:
@@ -64,15 +142,19 @@ python thermodynamic_feasibility_tester_MASTER.py --make-templates
 python thermodynamic_feasibility_tester_MASTER.py --input thermo_case_templates/mechanical_power.json
 ```
 
-Every power claim uses `W_out_kw`. The routes below compare it with an ideal resource ceiling. A full energy or entropy balance requires additional boundary data.
+Every power claim uses `W_out_kw`. The routes below calculate a model-specific ceiling and the applicable balance checks. If a required boundary condition or reference state is missing, the engine returns INSUFFICIENT DATA rather than a premature feasibility verdict.
 
 | Route | Other JSON inputs | Scope |
 |---|---|---|
-| `mechanical_power` | `recoverable_mechanical_power_kw` **or** `recoverable_energy_per_event_j` and `events_per_s` | Recoverable work at the converter input, averaged over the same interval as the electrical output. The example uses illustrative step energy. |
-| `solar_blackbody` | `T_source_K`, `T_ambient_K`, `irradiance_W_m2`, `collection_area_m2` | Ideal Petela–Landsberg radiative exergy bound. Irradiance and effective area refer to the same beam at the aperture. |
-| `reaction_gibbs` | `reaction_direction`, `delta_G_kj_per_mol_rxn`, `reaction_rate_mol_rxn_s` | Isothermal, isobaric forward reaction with signed Gibbs energy supplied at the operating conditions. The energy and rate use the same stoichiometric mole of reaction. Positive Gibbs energy requires external work input. |
+| `steady_control_volume` | Existing stream/heat data, plus `T0_K` and per-stream `specific_enthalpy_dead_state_kj_kg`, `specific_entropy_dead_state_kj_kg_k` | Flow exergy and reversible shaft-work limit. Dead-state properties must refer to the same stream material/composition; chemical and mixing exergy are not included. |
+| `closed_system` | Existing `delta_E_kj`, `delta_S_system_kj_K`, `heat`, `W_out_kj`, plus `T0_K`, `environment_pressure_kPa`, `delta_V_m3` | Non-flow exergy and reversible useful-work limit. Useful work subtracts displacement work against the environment. |
+| `mechanical_power` | `recoverable_mechanical_power_kw` **or** `recoverable_energy_per_event_j` and `events_per_s`; measured `heat_rejected_kw`; and `heat_rejection_temperature_K` if positive heat is rejected | Complete lumped First/Second Law checks. The unharvested resource remainder is not assumed to be converter heat loss. |
+| `solar_blackbody` | `T_source_K`, `T_ambient_K`, `irradiance_W_m2`, `collection_area_m2`, `W_out_kw` | Ideal Petela–Landsberg radiative exergy bound, First Law and exergy-derived entropy generation. All unconverted incident energy is assumed rejected to ambient. |
+| `reaction_gibbs` | `reaction_direction`, `delta_G_kj_per_mol_rxn`, `delta_H_kj_per_mol_rxn`, `reaction_rate_mol_rxn_s`, `reaction_temperature_K`, `heat_into_reactor_kw`, `heat_boundary_temperature_K`, `W_out_kw` | Reaction energy and entropy balances plus the Gibbs non-expansion-work ceiling. The simplified model assumes heat crosses at the reaction temperature. |
 
 Missing model inputs return **INSUFFICIENT DATA / MODEL REQUIRED** and name the missing quantities. For scenarios outside these routes, use `unsupported_domain`. Examples include wind without a supplied recoverable work limit, solar radiation needing a diffuse or spectral model, and chemical reactions without a Gibbs energy model.
+
+The website's manual Model 3 form is a one-inlet/one-outlet convenience form; the Python engine and JSON interface accept multiple streams. The manual Model 4 form exposes one heat interaction; the JSON interface accepts multiple heat interactions. For multi-stream/multi-heat cases, use structured JSON or extend the form before relying on it.
 
 The [implementation flowchart](FLOWCHART.md) shows the balance checks, derivations, and verdict paths. The ideal radiation and signed cell-work relations follow [Petela's radiation exergy analysis](https://www.sciencedirect.com/science/article/pii/S0038092X03002263) and the [IUPAC definition of standard electromotive force](https://goldbook.iupac.org/terms/view/S05913).
 
@@ -84,12 +166,12 @@ Start the offline terminal demo:
 python scenario_input.py "Can I generate electricity by walking?" --interactive
 ```
 
-When asked for details, enter `Recoverable energy is 4 J per step, at 120 steps per minute. Electrical output is 5 W.` The tester quotes the quantities it found, shows the normalized inputs, and compares the 5 W claim with an 8 W ceiling. The step energy is illustrative. For a single scripted run, use `--reply` followed by the additional details. Add `--output-json walking_case.json` to save the case for the original tester.
+When asked for details, enter `Recoverable energy is 4 J per step, at 120 steps per minute. Electrical output is 5 W. It rejects 3 W of heat at 25 °C.` The tester quotes the quantities it found, shows the normalized inputs, checks the 8 W mechanical input against the 5 W output and 3 W measured heat loss, and calculates entropy generation from the heat rejection. The step energy is illustrative. For a single scripted run, use `--reply` followed by the additional details. Add `--output-json walking_case.json` to save the case for the original tester.
 
 Use `--json` with a scenario argument for a machine-readable response. The response contains the selected route, original quotes, follow-up questions, normalized engine cases, and the result. If input is missing, it returns `needs_input` and leaves `cases` empty. Use repeated `--reply` options to supply additional details. The same interface is available in Python through `analyze_scenario(text, replies=...).as_dict()`.
 
 ```powershell
-python scenario_input.py --json "Generating electricity by walking" --reply "Recoverable energy is 4 J per step at 120 steps per minute. Electrical output is 5 W."
+python scenario_input.py --json "Generating electricity by walking" --reply "Recoverable energy is 4 J per step at 120 steps per minute. Electrical output is 5 W. It rejects 3 W of heat at 25 °C."
 ```
 
 The offline parser recognizes the walking demo and explicit CL 202 Assignment 1 Base or Modified requests with a suffix, such as `Run CL 202 Assignment 1 Modified for suffix 100.` If it cannot interpret a phrase, label the quantities explicitly or use the original structured inputs.

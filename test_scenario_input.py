@@ -49,14 +49,15 @@ class ScenarioInputTests(unittest.TestCase):
         self.assertTrue(any("recoverable mechanical power" in issue for issue in issues))
         self.assertTrue(any("output power" in issue for issue in issues))
 
-        turns.append("Recoverable energy is 4 J per step, at 120 steps per minute. Electrical output is 5 W.")
+        turns.append("Recoverable energy is 4 J per step, at 120 steps per minute. Electrical output is 5 W. It rejects 3 W of heat at 25 °C.")
         case, evidence, issues = scenario.prepare_case(turns, scenario.offline_extract(turns))
         self.assertEqual(issues, [])
         self.assertEqual(evidence["events_per_s"], "120 steps per minute")
         _, actual = scenario.assess_case(case)
         expected = thermo.run_case({
             "model": "mechanical_power", "recoverable_energy_per_event_j": 4,
-            "events_per_s": 2, "W_out_kw": 0.005,
+            "events_per_s": 2, "W_out_kw": 0.005, "heat_rejected_kw": 0.003,
+            "heat_rejection_temperature_K": 298.15,
         })
         self.assertEqual(actual.calculations, expected.calculations)
         self.assertEqual(actual.verdict, expected.verdict)
@@ -140,14 +141,15 @@ class ScenarioInputTests(unittest.TestCase):
                 self.assertAlmostEqual(summary[label], limit)
 
     def test_openai_structured_response_handoff(self):
-        expected = extraction("mechanical_power", recoverable_mechanical_power_kw="8 W", W_out_kw="5 W")
+        expected = extraction("mechanical_power", recoverable_mechanical_power_kw="8 W", W_out_kw="5 W",
+                             heat_rejected_kw="3 W", heat_rejection_temperature_K="25 °C")
         for fact in expected["facts"]:
             fact["item"] = None
         payload = {"status": "completed", "output": [
             {"type": "reasoning"},
             {"type": "message", "content": [{"type": "output_text", "text": json.dumps(expected)}]},
         ]}
-        turns = [WALKING, "Recoverable power is 8 W; output is 5 W."]
+        turns = [WALKING, "Recoverable power is 8 W; output is 5 W; it rejects 3 W of heat at 25 °C."]
         with patch("scenario_input.urlopen", return_value=io.BytesIO(json.dumps(payload).encode())) as request:
             result = scenario.openai_extract(turns, "test-key", "test-model")
         sent = request.call_args.args[0]
@@ -177,7 +179,7 @@ class ScenarioInputTests(unittest.TestCase):
         self.assertTrue(pending["questions"])
         self.assertEqual(pending["cases"], {})
         complete = scenario.analyze_scenario(WALKING, replies=[
-            "Recoverable energy is 4 J per step, at 120 steps per minute. Electrical output is 5 W.",
+            "Recoverable energy is 4 J per step, at 120 steps per minute. Electrical output is 5 W. It rejects 3 W of heat at 25 °C.",
         ]).as_dict()
         self.assertEqual(complete["status"], "evaluated")
         self.assertEqual(complete["cases"]["mechanical_power"]["W_out_kw"], 0.005)
@@ -197,7 +199,12 @@ class ScenarioInputTests(unittest.TestCase):
         # A signed state change must be grounded in a signed source quantity.
         pending = scenario.analyze_scenario(text, extractor=lambda _: facts).as_dict()
         self.assertEqual(pending["status"], "needs_input")
-        signed = "Closed system: delta E = -30 kJ, delta S = -0.04 kJ/K. Work out is 10 kJ. Rejects 20 kJ at 300 K."
+        facts["facts"].extend([
+            {"field": "T0_K", "quote": "300 K", "item": None},
+            {"field": "environment_pressure_kPa", "quote": "101.325 kPa", "item": None},
+            {"field": "delta_V_m3", "quote": "0 m3", "item": None},
+        ])
+        signed = "Closed system: delta E = -30 kJ, delta S = -0.04 kJ/K. Work out is 10 kJ. Rejects 20 kJ at 300 K. Environment is 300 K and 101.325 kPa; volume change is 0 m3."
         result = scenario.analyze_scenario(signed, extractor=lambda _: facts).as_dict()
         self.assertEqual(result["status"], "evaluated")
         self.assertEqual(result["cases"]["closed_system"]["heat"], [
@@ -208,7 +215,8 @@ class ScenarioInputTests(unittest.TestCase):
     def test_steady_flow_keeps_streams_separate_and_requires_explicit_heat_basis(self):
         text = ("Steady adiabatic control volume. Inlets are 0.5 kg/s at 120 kJ/kg and 1 kJ/(kg K), "
                 "and 0.5 kg/s at 80 kJ/kg and 1.2 kJ/(kg K). Outlet is 1 kg/s at 80 kJ/kg "
-                "and 1.2 kJ/(kg K). Work output is 20 kW.")
+                "and 1.2 kJ/(kg K). Work output is 20 kW. Environment temperature is 298 K. "
+                "Dead-state enthalpy is 0 kJ/kg and dead-state entropy is 0 kJ/(kg K) for each stream.")
         facts = extraction("steady_control_volume", W_out_kw="20 kW", adiabatic="adiabatic")
         for group, item, values in (
             ("inlets", 1, ("0.5 kg/s", "120 kJ/kg", "1 kJ/(kg K)")),
@@ -216,7 +224,12 @@ class ScenarioInputTests(unittest.TestCase):
             ("outlets", 1, ("1 kg/s", "80 kJ/kg", "1.2 kJ/(kg K)")),
         ):
             facts["facts"].extend({"field": f"{group}.{field}", "quote": quote, "item": item}
-                                  for field, quote in zip(scenario.MASS_PROPERTIES, values))
+                                  for field, quote in zip(list(scenario.MASS_PROPERTIES)[:3], values))
+            facts["facts"].extend([
+                {"field": f"{group}.specific_enthalpy_dead_state_kj_kg", "quote": "0 kJ/kg", "item": item},
+                {"field": f"{group}.specific_entropy_dead_state_kj_kg_k", "quote": "0 kJ/(kg K)", "item": item},
+            ])
+        facts["facts"].append({"field": "T0_K", "quote": "298 K", "item": None})
         actual = scenario.analyze_scenario(text, extractor=lambda _: facts).as_dict()
         self.assertEqual(actual["status"], "evaluated")
         self.assertEqual(actual["cases"]["steady_control_volume"]["heat"], [])
